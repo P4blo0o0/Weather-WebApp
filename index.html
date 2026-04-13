@@ -42,6 +42,26 @@
             to { transform: rotate(360deg); }
         }
 
+        /* Debug toast for mobile testing */
+        .debug-toast {
+            position: fixed;
+            bottom: 20px;
+            left: 20px;
+            right: 20px;
+            background: rgba(0,0,0,0.8);
+            color: #0f0;
+            padding: 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            z-index: 9999;
+            display: none;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255,255,255,0.2);
+        }
+        .debug-toast.show {
+            display: block;
+        }
+
         /* location modal — mobile friendly */
         .location-modal {
             position: fixed;
@@ -414,6 +434,9 @@
     </style>
 </head>
 <body>
+    <!-- Debug toast for mobile testing -->
+    <div class="debug-toast" id="debugToast"></div>
+
     <!-- Mobile friendly location modal -->
     <div class="location-modal" id="locationModal">
         <div class="modal-content">
@@ -473,14 +496,18 @@
         const apiKey = '22454ffebf8e9eeb302c90f15391556e';
         let locationPermissionGranted = false;
 
-        (function initMobileMeta(){
-            // ensure viewport and touch behavior
-            const viewport = document.querySelector('meta[name="viewport"]');
-            if(viewport) viewport.setAttribute('content', 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes, viewport-fit=cover');
-        })();
+        // Debug helper for mobile testing
+        function debugLog(msg) {
+            console.log('[Weather App]', msg);
+            const toast = document.getElementById('debugToast');
+            toast.textContent = msg;
+            toast.classList.add('show');
+            setTimeout(() => toast.classList.remove('show'), 3000);
+        }
 
         window.addEventListener('load', () => {
             const pref = localStorage.getItem('locationPreference');
+            debugLog('App loaded. Location pref: ' + (pref || 'none'));
             if (pref === 'granted') {
                 requestLocationPermission();
             } else if (pref === 'denied') {
@@ -490,8 +517,12 @@
             }
         });
 
-        function showLocationModal() { document.getElementById('locationModal').classList.add('active'); }
-        function hideLocationModal() { document.getElementById('locationModal').classList.remove('active'); }
+        function showLocationModal() { 
+            document.getElementById('locationModal').classList.add('active'); 
+        }
+        function hideLocationModal() { 
+            document.getElementById('locationModal').classList.remove('active'); 
+        }
 
         function requestLocationPermission() {
             hideLocationModal();
@@ -502,12 +533,14 @@
             }
             showLoading();
             updateLocationDisplay('Locating...');
+            debugLog('Requesting GPS location...');
 
             navigator.geolocation.getCurrentPosition(
                 (pos) => {
                     locationPermissionGranted = true;
                     localStorage.setItem('locationPreference', 'granted');
                     const { latitude, longitude } = pos.coords;
+                    debugLog(`GPS success: ${latitude.toFixed(4)}, ${longitude.toFixed(4)}`);
                     getWeatherByCoords(latitude, longitude);
                     getLocationName(latitude, longitude);
                 },
@@ -516,13 +549,24 @@
                     localStorage.setItem('locationPreference', 'denied');
                     hideLoading();
                     let msg = 'Location denied. Search manually.';
-                    if(error.code === 1) msg = 'Location permission denied. You can search instead.';
-                    else if(error.code === 2) msg = 'Location unavailable.';
-                    else if(error.code === 3) msg = 'Location timeout.';
+                    if(error.code === 1) {
+                        msg = 'Permission denied. Check browser/site settings.';
+                        debugLog('Error: Permission denied');
+                    } else if(error.code === 2) {
+                        msg = 'Position unavailable. Try outdoors.';
+                        debugLog('Error: Position unavailable');
+                    } else if(error.code === 3) {
+                        msg = 'Location timeout. Try again.';
+                        debugLog('Error: Timeout');
+                    }
                     updateLocationDisplay('Access denied');
                     showLocationError(msg);
                 },
-                { enableHighAccuracy: true, timeout: 8000, maximumAge: 30000 }
+                { 
+                    enableHighAccuracy: true, 
+                    timeout: 15000,        // Increased timeout for mobile
+                    maximumAge: 60000       // Allow cached position up to 1 minute
+                }
             );
         }
 
@@ -538,13 +582,25 @@
 
         function getLocationName(lat, lon) {
             fetch(`https://api.openweathermap.org/geo/1.0/reverse?lat=${lat}&lon=${lon}&limit=1&appid=${apiKey}`)
-                .then(r => r.json()).then(d => {
-                    if(d && d[0]) updateLocationDisplay(`${d[0].name}, ${d[0].country}`);
-                    else updateLocationDisplay('Current location');
-                }).catch(() => updateLocationDisplay('Current location'));
+                .then(r => r.json())
+                .then(d => {
+                    if(d && d[0]) {
+                        const locationStr = `${d[0].name}, ${d[0].country}`;
+                        updateLocationDisplay(locationStr);
+                        debugLog('Location name: ' + locationStr);
+                    } else {
+                        updateLocationDisplay('Current location');
+                    }
+                })
+                .catch(e => {
+                    debugLog('Reverse geocode failed');
+                    updateLocationDisplay('Current location');
+                });
         }
 
-        function updateLocationDisplay(text) { document.getElementById('location-name').textContent = text; }
+        function updateLocationDisplay(text) { 
+            document.getElementById('location-name').textContent = text; 
+        }
 
         function showLocationError(msg) {
             const infoDiv = document.getElementById('weather-info');
@@ -553,31 +609,68 @@
             document.getElementById('weather-icon').style.display = 'none';
         }
 
+        // FIXED: Correct forecast URL construction
         function getWeatherByCoords(lat, lon) {
-            const cur = `https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lon}&appid=${apiKey}`;
-            const fore = `https://api.openweathermap.org/data/2.5/forecast?lat=${lat}&lon=${lat}&appid=${apiKey}`; // fix: use lat,lon correctly
+            const currentUrl = `https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lon}&appid=${apiKey}`;
             const forecastUrl = `https://api.openweathermap.org/data/2.5/forecast?lat=${lat}&lon=${lon}&appid=${apiKey}`;
-            Promise.all([fetch(cur).then(r=>r.json()), fetch(forecastUrl).then(r=>r.json())])
-                .then(([w,f]) => { displayWeather(w); displayHourlyForecast(f.list); hideLoading(); })
-                .catch(e => { hideLoading(); showLocationError('Network error. Try again.'); });
+            
+            debugLog('Fetching weather for coordinates...');
+            
+            Promise.all([
+                fetch(currentUrl).then(r => {
+                    if (!r.ok) throw new Error(`Weather API error: ${r.status}`);
+                    return r.json();
+                }),
+                fetch(forecastUrl).then(r => {
+                    if (!r.ok) throw new Error(`Forecast API error: ${r.status}`);
+                    return r.json();
+                })
+            ])
+            .then(([weatherData, forecastData]) => {
+                debugLog('Weather data received');
+                displayWeather(weatherData);
+                displayHourlyForecast(forecastData.list);
+                hideLoading();
+            })
+            .catch(error => {
+                console.error('Fetch error:', error);
+                debugLog('API Error: ' + error.message);
+                hideLoading();
+                showLocationError('Network or API error. Check connection.');
+            });
         }
 
         function getWeatherByCity(city) {
-            const cur = `https://api.openweathermap.org/data/2.5/weather?q=${city}&appid=${apiKey}`;
-            const fore = `https://api.openweathermap.org/data/2.5/forecast?q=${city}&appid=${apiKey}`;
-            Promise.all([fetch(cur).then(r=>r.json()), fetch(fore).then(r=>r.json())])
-                .then(([w,f]) => {
-                    if(w.cod === '404') { showLocationError('City not found'); return; }
-                    displayWeather(w); displayHourlyForecast(f.list);
-                    updateLocationDisplay(`${w.name}, ${w.sys.country}`);
-                    hideLoading();
-                }).catch(() => { hideLoading(); showLocationError('Unable to load. Check connection.'); });
+            const cur = `https://api.openweathermap.org/data/2.5/weather?q=${encodeURIComponent(city)}&appid=${apiKey}`;
+            const fore = `https://api.openweathermap.org/data/2.5/forecast?q=${encodeURIComponent(city)}&appid=${apiKey}`;
+            
+            Promise.all([
+                fetch(cur).then(r => r.json()), 
+                fetch(fore).then(r => r.json())
+            ])
+            .then(([w, f]) => {
+                if(w.cod === '404') { 
+                    showLocationError('City not found'); 
+                    debugLog('City not found');
+                    return; 
+                }
+                displayWeather(w); 
+                displayHourlyForecast(f.list);
+                updateLocationDisplay(`${w.name}, ${w.sys.country}`);
+                hideLoading();
+            })
+            .catch(() => { 
+                hideLoading(); 
+                showLocationError('Unable to load. Check connection.'); 
+                debugLog('City search failed');
+            });
         }
 
         function searchWeather() {
             const city = document.getElementById('city').value.trim();
             if(!city) { alert('Enter a city name'); return; }
-            showLoading(); getWeatherByCity(city);
+            showLoading(); 
+            getWeatherByCity(city);
             document.getElementById('city').value = '';
         }
 
@@ -611,7 +704,7 @@
         function displayHourlyForecast(list) {
             const container = document.getElementById('hourly-forecast');
             container.innerHTML = '';
-            const next8 = list.slice(0,8);
+            const next8 = list.slice(0, 8);
             next8.forEach(item => {
                 const d = new Date(item.dt * 1000);
                 const hour = d.getHours().toString().padStart(2,'0')+':00';
@@ -619,7 +712,8 @@
                 const icon = item.weather[0].icon;
                 const desc = item.weather[0].description;
                 const dayLabel = d.getDate() === new Date().getDate() ? 'Today' : 'Tomorrow';
-                const el = document.createElement('div'); el.className = 'hourly-item';
+                const el = document.createElement('div'); 
+                el.className = 'hourly-item';
                 el.innerHTML = `<span class="time">${hour}</span><img src="https://openweathermap.org/img/wn/${icon}.png" alt="${desc}"><span class="temp">${temp}°C</span><span class="description">${desc}</span><span style="font-size:11px;opacity:0.7;">${dayLabel}</span>`;
                 container.appendChild(el);
             });
